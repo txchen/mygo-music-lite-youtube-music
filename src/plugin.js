@@ -1,8 +1,12 @@
-import { createClient, USER_AGENT } from './client.js';
+import { createClient } from './client.js';
 import { createCatalog } from './catalog.js';
 import { createExtractor } from './extractor.js';
 import { failure } from './errors.js';
 import { nodes, text, image } from './mapping.js';
+
+const SIGN_IN_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15';
+const SIGN_IN_HANDOFF = 'https://www.youtube.com/signin?action_handle_signin=true&app=desktop&next=' + encodeURIComponent('https://music.youtube.com/');
+const SIGN_IN_URL = 'https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&uilel=3&passive=true&continue=' + encodeURIComponent(SIGN_IN_HANDOFF);
 
 export function createPlugin(host, fetcher = fetch) {
   const stored = host.storage.get('session');
@@ -31,7 +35,12 @@ export function createPlugin(host, fetcher = fetch) {
   async function signIn() {
     const generation = ++session.generation;
     catalog.clear();
-    const result = await host.webSignIn({ url: 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F', cookiesOf: 'https://music.youtube.com', until: ['__Secure-3PAPISID'], userAgent: USER_AGENT });
+    const result = await host.webSignIn({
+      url: SIGN_IN_URL,
+      cookiesOf: 'https://music.youtube.com',
+      until: ['SAPISID', '__Secure-3PSID'],
+      userAgent: SIGN_IN_USER_AGENT,
+    });
     if (generation !== session.generation) throw failure('signIn', 'This sign-in was cancelled.');
     if (!result?.cookie || /[\r\n\0]/.test(result.cookie)) throw failure('signIn', 'YouTube Music did not return a valid sign-in.');
     const response = await client.request('account/account_menu', {}, { signed: true, cookie: result.cookie });

@@ -600,6 +600,9 @@ function createExtractor(spawn, { timeout = 25000, fetch: fetcher = fetch, retry
 }
 
 // src/plugin.js
+var SIGN_IN_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
+var SIGN_IN_HANDOFF = "https://www.youtube.com/signin?action_handle_signin=true&app=desktop&next=" + encodeURIComponent("https://music.youtube.com/");
+var SIGN_IN_URL = "https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&uilel=3&passive=true&continue=" + encodeURIComponent(SIGN_IN_HANDOFF);
 function createPlugin(host2, fetcher = fetch) {
   const stored = host2.storage.get("session");
   const session = { cookie: typeof stored?.cookie === "string" ? stored.cookie : "", account: stored?.account || null, generation: 0 };
@@ -626,7 +629,12 @@ function createPlugin(host2, fetcher = fetch) {
   async function signIn() {
     const generation = ++session.generation;
     catalog.clear();
-    const result = await host2.webSignIn({ url: "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F", cookiesOf: "https://music.youtube.com", until: ["__Secure-3PAPISID"], userAgent: USER_AGENT });
+    const result = await host2.webSignIn({
+      url: SIGN_IN_URL,
+      cookiesOf: "https://music.youtube.com",
+      until: ["SAPISID", "__Secure-3PSID"],
+      userAgent: SIGN_IN_USER_AGENT
+    });
     if (generation !== session.generation)
       throw failure("signIn", "This sign-in was cancelled.");
     if (!result?.cookie || /[\r\n\0]/.test(result.cookie))

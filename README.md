@@ -43,7 +43,9 @@ If playback fails, update the dependencies with `brew upgrade yt-dlp deno` and t
 
 ## Account and privacy
 
-Sign in through the plugin's account action. Lite opens Google's page in its isolated sign-in browser. The plugin receives the resulting YouTube Music cookie only after the named sign-in cookie exists. Google may reject embedded-browser sign-in, and a returned cookie may still need a fresh sign-in.
+Sign in through the plugin's account action. Lite opens Google's page in its isolated sign-in browser. The plugin waits for the YouTube session cookies before checking the account with YouTube Music.
+
+Version 0.1.1 corrects the macOS sign-in configuration to match the original YouTube Music plugin's working flow. It uses a Safari identity for Lite's WebKit browser, redirects through YouTube's session handoff, and waits for `SAPISID` and `__Secure-3PSID`. The automated tests cover this configuration. Real Google sign-in still needs user verification.
 
 Account cookies are saved in Lite's plugin storage on this computer. They are sensitive credentials. The plugin sends them only to YouTube Music API requests that require the account. They are never passed to `yt-dlp`, printed by this plugin, added to process arguments, or returned as audio CDN headers. Public extraction starts with `--ignore-config` and an empty stdin configuration so a user's `yt-dlp` config cannot silently add cookies, downloads or postprocessors.
 
