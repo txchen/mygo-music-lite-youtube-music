@@ -1,17 +1,50 @@
 {
   "id": "youtube-music-lite",
   "name": "YouTube Music",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "minAppVersion": "0.1.22",
   "main": "index.js",
   "playback": "stream",
   "permissions": {
-    "network": ["music.youtube.com", "www.youtube.com", "accounts.google.com", "*.googleusercontent.com", "*.ytimg.com", "*.ggpht.com", "*.googlevideo.com"],
-    "process": ["yt-dlp", "/opt/homebrew/bin/yt-dlp", "/usr/local/bin/yt-dlp", "deno", "/opt/homebrew/bin/deno", "/usr/local/bin/deno"]
+    "network": [
+      "music.youtube.com",
+      "s.youtube.com",
+      "api.betterlyrics.org",
+      "www.youtube.com",
+      "accounts.google.com",
+      "*.googleusercontent.com",
+      "*.ytimg.com",
+      "*.ggpht.com",
+      "*.googlevideo.com"
+    ],
+    "process": [
+      "yt-dlp",
+      "/opt/homebrew/bin/yt-dlp",
+      "/usr/local/bin/yt-dlp",
+      "deno",
+      "/opt/homebrew/bin/deno",
+      "/usr/local/bin/deno"
+    ]
   },
   "navigation": [
-    {"builtin": "home"},
-    {"builtin": "liked"},
-    {"title": "Library", "page": "library", "icon": "music"}
+    {
+      "builtin": "home"
+    },
+    {
+      "title": "Charts",
+      "page": "charts",
+      "icon": "chart"
+    },
+    {
+      "title": "New Releases",
+      "page": "new",
+      "icon": "star"
+    },
+    {
+      "builtin": "stations"
+    },
+    {
+      "builtin": "liked"
+    }
   ]
 }

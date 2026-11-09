@@ -27,6 +27,48 @@ func TestYouTubeCatalogLive(t *testing.T) {
 		}
 		t.Logf("sections %d", len(b.Sections))
 	})
+	for _, page := range []string{"charts", "new"} {
+		t.Run(page, func(t *testing.T) {
+			b, e := p.Browse(page)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if len(b.Sections) == 0 {
+				t.Fatal("empty page")
+			}
+			t.Logf("sections %d", len(b.Sections))
+		})
+	}
+	t.Run("suggest", func(t *testing.T) {
+		xs, e := p.Suggest("Daft")
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(xs) == 0 {
+			t.Fatal("empty suggestions")
+		}
+		t.Logf("suggestions %d", len(xs))
+	})
+	t.Run("radio", func(t *testing.T) {
+		stations, e := p.Stations()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(stations) == 0 {
+			t.Fatal("no stations")
+		}
+		if e := p.call("played", map[string]string{"id": "5NV6Rdv1a3I"}, nil); e != nil {
+			t.Fatal(e)
+		}
+		tracks, e := p.StationNext(stations[0].ID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(tracks) == 0 {
+			t.Fatal("empty station")
+		}
+		t.Logf("radio tracks %d", len(tracks))
+	})
 	for _, kind := range []music.SearchKind{music.SearchTracks, music.SearchAlbums, music.SearchArtists, music.SearchPlaylists} {
 		t.Run(string(kind), func(t *testing.T) {
 			r, e := p.Search("Daft Punk", kind, 0)

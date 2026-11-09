@@ -59,7 +59,7 @@ async function run(process, deadline, limit) {
     }
   }
 }
-async function ready(stream, fetcher, deadline, retryDelays) {
+export async function ready(stream, fetcher, deadline, retryDelays) {
   let attempt = 0;
   while (Date.now() < deadline) {
     const controller = new AbortController();
@@ -97,6 +97,7 @@ async function ready(stream, fetcher, deadline, retryDelays) {
       try { await response?.body?.cancel(); } catch {}
     }
     if (!retry) break;
+    if (!retryDelays.length) break;
     const delay = retryDelays[Math.min(attempt++, retryDelays.length - 1)];
     const remaining = deadline - Date.now();
     if (remaining <= delay) break;
@@ -107,9 +108,10 @@ async function ready(stream, fetcher, deadline, retryDelays) {
 function permissionError(error) { return /allow|permission/i.test(String(error)); }
 export function createExtractor(spawn, { timeout = 25000, fetch: fetcher = fetch, retryDelays = [1000, 2000, 4000] } = {}) {
   let runtime;
-  return async function extract(id) {
+  return async function extract(id, options = {}) {
     requireVideoID(id);
-    const deadline = Date.now() + timeout;
+    const deadline = Math.min(Date.now() + timeout, options.deadline ?? Infinity);
+    if (Date.now() >= deadline) throw failure('unavailable', 'YouTube audio extraction timed out. Try again.');
     if (!runtime) {
       for (const command of RUNTIMES) {
         let child;

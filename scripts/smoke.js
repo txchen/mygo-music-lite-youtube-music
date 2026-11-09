@@ -1,7 +1,6 @@
-import { createClient } from '../src/client.js';
-import { createCatalog } from '../src/catalog.js';
-const session = { cookie: '', generation: 0 };
-const catalog = createCatalog(createClient({ session }), session);
+import { installPublicHost } from './runtime.js';
+installPublicHost();
+const catalog = await import('../index.js');
 const home = await catalog.home();
 console.log(`Home returned ${home.sections.length} sections.`);
 for (const kind of ['tracks', 'albums', 'artists', 'playlists']) {
@@ -30,4 +29,16 @@ for (const kind of ['tracks', 'albums', 'artists', 'playlists']) {
     console.log(`Playlist detail returned ${page.tracks.length} tracks.`);
   }
 }
+for (const page of ['charts', 'new']) {
+  const result = await catalog.browse({ page });
+  if (!result.sections.length) throw new Error(`${page} returned no sections.`);
+  console.log(`${page} returned ${result.sections.length} sections.`);
+}
+const suggestions = await catalog.suggest({ query: 'Daft' });
+if (!suggestions.length) throw new Error('No search suggestions.');
+await catalog.played({ id: '5NV6Rdv1a3I' });
+const stations = catalog.stations();
+const radio = await catalog.stationNext({ id: stations[0].id });
+if (!radio.length) throw new Error('No radio tracks.');
+console.log(`Suggestions ${suggestions.length}, radio ${radio.length}.`);
 console.log('Public YouTube Music smoke passed. No account credentials were used.');

@@ -1,31 +1,10 @@
-import { createExtractor } from '../src/extractor.js';
-
-async function* readLines(stream) {
-  const decoder = new TextDecoder();
-  let remaining = '';
-  for await (const chunk of stream) {
-    remaining += decoder.decode(chunk, { stream: true });
-    let newline;
-    while ((newline = remaining.indexOf('\n')) >= 0) {
-      yield remaining.slice(0, newline);
-      remaining = remaining.slice(newline + 1);
-    }
-  }
-  remaining += decoder.decode();
-  if (remaining) yield remaining;
-}
-function spawn(command, args) {
-  const child = Bun.spawn([command, ...args], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
-  const lines = readLines(child.stdout);
-  return {
-    closeStdin() { child.stdin.end(); },
-    async readLine() { const line = await lines.next(); return line.done ? null : line.value; },
-    wait: () => child.exited,
-    kill: () => child.kill(),
-  };
-}
+import { installPublicHost } from './runtime.js';
+installPublicHost();
+const plugin = await import('../index.js');
 const id = Bun.argv.slice(2).find(arg => arg !== '--') || 'aqz-KE-bpKQ';
-const stream = await createExtractor(spawn)(id);
+const started = performance.now();
+const stream = await plugin.stream({ id });
+console.log(`Stream resolved in ${Math.round(performance.now() - started)} ms.`);
 const controller = new AbortController();
 const timer = setTimeout(() => controller.abort(), 15000);
 try {

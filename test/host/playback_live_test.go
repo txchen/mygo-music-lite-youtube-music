@@ -1,6 +1,7 @@
 package player
 
 import (
+	"encoding/json"
 	"github.com/egoist/mygo"
 	"math"
 	"mygo-music/internal/music"
@@ -37,14 +38,17 @@ func TestYouTubePluginLive(t *testing.T) {
 	t.Logf("live search returned %d tracks", len(found.Tracks))
 	video := os.Getenv("MYGO_YOUTUBE_VIDEO")
 	if video == "" {
-		video = "5NV6Rdv1a3I"
+		video = "aqz-KE-bpKQ"
 	}
+	resolveStarted := time.Now()
 	stream, err := src.Stream(video, "")
+	t.Logf("stream resolution %s", time.Since(resolveStarted))
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	asked := 0
 	resolved := streamer{asked: &asked, st: *stream}
+	playStarted := time.Now()
 	var p *Player
 	mygo.RunOnMain(func() {
 		p = New(func(f func()) { mygo.RunOnMain(f) })
@@ -72,6 +76,7 @@ func TestYouTubePluginLive(t *testing.T) {
 		t.Fatal("native playback timed out")
 	}
 	wait(func() bool { return p.Ready() && p.Position() > 200*time.Millisecond })
+	t.Logf("native start through 200ms playback %s", time.Since(playStarted))
 	mygo.RunOnMain(func() { t.Logf("native engine %T", p.out); p.TogglePlay(); p.Seek(10 * time.Second) })
 	wait(func() bool { return math.Abs(p.Position().Seconds()-10) < 0.5 })
 	mygo.RunOnMain(func() {
@@ -81,4 +86,73 @@ func TestYouTubePluginLive(t *testing.T) {
 		p.TogglePlay()
 	})
 	wait(func() bool { return p.Position() > 10500*time.Millisecond })
+}
+
+// Public YouTube CDN bytes remain seekable through the native relay.
+func TestYouTubeDirectLive(t *testing.T) {
+	path := os.Getenv("MYGO_YOUTUBE_DIRECT")
+	if path == "" {
+		t.Skip("set MYGO_YOUTUBE_DIRECT")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		URL     string            `json:"url"`
+		Headers map[string]string `json:"http_headers"`
+	}
+	if err = json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	relay, err := newAudioRelay(&music.Stream{URL: result.URL, Headers: result.Headers, Type: "m4a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	defer func() {
+		if t.Failed() {
+			t.Logf("relay failure %v", relay.Err())
+		}
+	}()
+	var out engine
+	mygo.RunOnMain(func() { out, err = openAVPlayer(&music.Stream{URL: relay.url, Type: "m4a"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mygo.RunOnMain(out.Close)
+	youtubeWait(t, func() bool {
+		state, e := out.Poll()
+		if e != nil {
+			err = e
+			return true
+		}
+		return state == outputReady
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mygo.RunOnMain(func() { out.SetVolume(0); out.Play() })
+	youtubeWait(t, func() bool { return out.Position() > 200*time.Millisecond })
+	mygo.RunOnMain(func() { out.Pause(); out.Seek(10 * time.Second) })
+	youtubeWait(t, func() bool { return math.Abs(out.Position().Seconds()-10) < 0.5 })
+	mygo.RunOnMain(func() { out.Play() })
+	youtubeWait(t, func() bool { return out.Position() > 10500*time.Millisecond })
+	if err := relay.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func youtubeWait(t *testing.T, check func() bool) {
+	t.Helper()
+	end := time.Now().Add(25 * time.Second)
+	for time.Now().Before(end) {
+		ok := false
+		mygo.RunOnMain(func() { ok = check() })
+		if ok {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("native network timeout")
 }

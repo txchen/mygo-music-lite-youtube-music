@@ -1,0 +1,16 @@
+{
+  "Charts": "排行榜",
+  "New Releases": "新发行",
+  "Home": "首页",
+  "Your YouTube Music session has ended: sign in again": "你的 YouTube Music 登录已过期，请重新登录",
+  "YouTube Music didn't take that sign-in: try again": "YouTube Music 没有接受这次登录，请重试",
+  "YouTube gave no address to report it to": "YouTube 没有给出上报地址",
+  "Allow YouTube Music to start programs in its settings": "请在 YouTube Music 的设置中允许它启动程序",
+  "YouTube gave this visit no ID": "YouTube 没有给这次访问分配 ID",
+  "YouTube listed no audio to play as it is": "YouTube 没有列出可以直接播放的音频",
+  "YouTube turned down your session: sign in again": "YouTube 拒绝了你的登录，请重新登录",
+  "YouTube asks you to sign in to play this": "YouTube 要求登录后才能播放",
+  "YouTube Music plays through ffmpeg: install it with Homebrew, or so that it's on the PATH": "YouTube Music 需要 ffmpeg 才能播放：请用 Homebrew 安装，或安装到 PATH 中",
+  "the audio didn't start in time": "音频没有及时开始播放",
+  "no such page": "没有这个页面"
+}

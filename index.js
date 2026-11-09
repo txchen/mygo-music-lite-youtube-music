@@ -12,411 +12,6 @@ function requireVideoID(id) {
   return id;
 }
 
-// src/sha1.js
-function sha1(text) {
-  const bytes = new TextEncoder().encode(text);
-  const size = Math.ceil((bytes.length + 9) / 64) * 64;
-  const data = new Uint8Array(size);
-  data.set(bytes);
-  data[bytes.length] = 128;
-  const view = new DataView(data.buffer);
-  view.setUint32(size - 4, bytes.length * 8);
-  const h = [1732584193, 4023233417, 2562383102, 271733878, 3285377520];
-  const w = new Int32Array(80);
-  const rotate = (n, b) => n << b | n >>> 32 - b;
-  for (let block = 0;block < size; block += 64) {
-    for (let i = 0;i < 16; i++)
-      w[i] = view.getInt32(block + i * 4);
-    for (let i = 16;i < 80; i++)
-      w[i] = rotate(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-    let [a, b, c, d, e] = h;
-    for (let i = 0;i < 80; i++) {
-      const f = i < 20 ? b & c | ~b & d : i < 40 ? b ^ c ^ d : i < 60 ? b & c | b & d | c & d : b ^ c ^ d;
-      const k = i < 20 ? 1518500249 : i < 40 ? 1859775393 : i < 60 ? 2400959708 : 3395469782;
-      const next = rotate(a, 5) + f + e + k + w[i] | 0;
-      e = d;
-      d = c;
-      c = rotate(b, 30);
-      b = a;
-      a = next;
-    }
-    [a, b, c, d, e].forEach((value, i) => {
-      h[i] = h[i] + value | 0;
-    });
-  }
-  return h.map((n) => (n >>> 0).toString(16).padStart(8, "0")).join("");
-}
-
-// src/client.js
-var ORIGIN = "https://music.youtube.com";
-var USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
-function cookieValue(cookie, name) {
-  return cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(name + "="))?.slice(name.length + 1) || "";
-}
-function authHeaders(cookie, now = Date.now()) {
-  if (/[\r\n\0]/.test(cookie))
-    throw failure("signIn", "The saved sign-in is invalid. Sign in again.");
-  const sapisid = cookieValue(cookie, "SAPISID") || cookieValue(cookie, "__Secure-3PAPISID");
-  if (!sapisid)
-    throw failure("signIn", "Sign in to YouTube Music first.");
-  const timestamp = Math.floor(now / 1000);
-  return { cookie, authorization: `SAPISIDHASH ${timestamp}_${sha1(`${timestamp} ${sapisid} ${ORIGIN}`)}`, "x-goog-authuser": "0", "x-origin": ORIGIN };
-}
-function createClient({ fetch: fetcher = fetch, session, language = () => "en" }) {
-  let config;
-  let bootstrapPromise;
-  async function read(url, options, deadline) {
-    const controller = new AbortController;
-    const remaining = Math.min(1e4, deadline - Date.now());
-    if (remaining <= 0)
-      throw failure("unavailable", "YouTube Music took too long to answer. Try again.");
-    const timer = setTimeout(() => controller.abort(), remaining);
-    try {
-      const response = await fetcher(url, { ...options, signal: controller.signal });
-      if (response.status === 401 || response.status === 403)
-        throw failure(options.signed ? "signIn" : "unavailable", options.signed ? "Your YouTube Music sign-in expired. Sign in again." : "YouTube Music refused this request. Try again later.");
-      if (!response.ok)
-        throw failure("unavailable", `YouTube Music returned HTTP ${response.status}. Try again later.`);
-      const body = await response.text();
-      if (body.length > 12 * 1024 * 1024)
-        throw failure("unavailable", "YouTube Music returned an oversized response.");
-      return body;
-    } catch (error) {
-      if (isFailure(error))
-        throw error;
-      throw failure("unavailable", controller.signal.aborted ? "YouTube Music took too long to answer. Try again." : "Could not reach YouTube Music. Check your connection.");
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  async function bootstrap(deadline) {
-    if (config)
-      return config;
-    if (!bootstrapPromise) {
-      bootstrapPromise = (async () => {
-        const html = await read(ORIGIN + "/", { headers: { "user-agent": USER_AGENT } }, deadline);
-        const version = html.match(/"INNERTUBE_CLIENT_VERSION"\s*:\s*"([^"]+)"/)?.[1];
-        const visitor = html.match(/"VISITOR_DATA"\s*:\s*"([^"]+)"/)?.[1] || "";
-        if (!version)
-          throw failure("unavailable", "YouTube Music could not initialize. Its website may have changed.");
-        config = { version, visitor };
-        return config;
-      })().finally(() => {
-        bootstrapPromise = null;
-      });
-    }
-    return bootstrapPromise;
-  }
-  async function request(endpoint, body = {}, { signed = false, cookie, deadline = Date.now() + 24000 } = {}) {
-    const generation = session.generation;
-    const credentials = cookie === undefined ? session.cookie : cookie;
-    if (signed && !credentials)
-      throw failure("signIn", "Sign in to YouTube Music first.");
-    const initial = await bootstrap(deadline);
-    if (generation !== session.generation)
-      throw failure("unavailable", "Your account changed. Open this page again.");
-    const headers = { "content-type": "application/json", "user-agent": USER_AGENT, origin: ORIGIN, "x-youtube-client-name": "67", "x-youtube-client-version": initial.version };
-    if (initial.visitor)
-      headers["x-goog-visitor-id"] = initial.visitor;
-    if (signed)
-      Object.assign(headers, authHeaders(credentials));
-    const context = { client: { clientName: "WEB_REMIX", clientVersion: initial.version, hl: language() === "zh-CN" ? "zh-CN" : "en", gl: "US", visitorData: initial.visitor }, user: { lockedSafetyMode: false } };
-    const raw = await read(`${ORIGIN}/youtubei/v1/${endpoint}?prettyPrint=false`, { method: "POST", headers, body: JSON.stringify({ ...body, context }), signed }, deadline);
-    if (generation !== session.generation)
-      throw failure("unavailable", "Your account changed. Open this page again.");
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw failure("unavailable", "YouTube Music returned an unreadable response.");
-    }
-    if (data.error)
-      throw failure(data.error.code === 401 || data.error.code === 403 ? "signIn" : "unavailable", "YouTube Music could not complete this request.");
-    if (signed && data.responseContext?.mainAppWebResponseContext?.loggedOut === true)
-      throw failure("signIn", "Your YouTube Music sign-in expired. Sign in again.");
-    return data;
-  }
-  return { request };
-}
-
-// src/mapping.js
-function text(value) {
-  return typeof value === "string" ? value : value?.simpleText || (value?.runs || []).map((run) => run.text || "").join("");
-}
-function nodes(root, key) {
-  const found = [];
-  function visit(value) {
-    if (!value || typeof value !== "object")
-      return;
-    if (value[key]) {
-      found.push(value[key]);
-      return;
-    }
-    for (const child of Object.values(value)) {
-      if (Array.isArray(child))
-        child.forEach(visit);
-      else
-        visit(child);
-    }
-  }
-  visit(root);
-  return found;
-}
-function image(value) {
-  const list = nodes(value, "thumbnails").flat();
-  return list.filter((t) => t?.url).sort((a, b) => (b.width || 0) - (a.width || 0))[0]?.url || "";
-}
-function duration(value) {
-  const match = String(value).match(/^(\d+):([0-5]\d)(?::([0-5]\d))?$/);
-  if (!match)
-    return 0;
-  const parts = match.slice(1).filter((x) => x !== undefined).map(Number);
-  return parts.reduce((total, n) => total * 60 + n, 0) * 1000;
-}
-function browseEndpoint(value) {
-  return value?.navigationEndpoint?.browseEndpoint || value?.browseEndpoint;
-}
-function pageType(endpoint) {
-  return endpoint?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType || "";
-}
-function credits(runs, type) {
-  return runs.flatMap((run) => {
-    const endpoint = browseEndpoint(run);
-    if (!endpoint || !pageType(endpoint).includes(type))
-      return [];
-    return [{ id: endpoint.browseId, name: run.text || "" }];
-  });
-}
-function toTrack(item) {
-  const columns = (item.flexColumns || []).map((c) => c.musicResponsiveListItemFlexColumnRenderer?.text || {});
-  const title = columns[0] || item.title || {};
-  const runs = columns.slice(1).flatMap((c) => c.runs || []).concat(item.subtitle?.runs || []);
-  const watch = title.runs?.find((r) => r.navigationEndpoint?.watchEndpoint)?.navigationEndpoint?.watchEndpoint || item.navigationEndpoint?.watchEndpoint || item.playlistItemData || nodes(item.overlay, "watchEndpoint")[0] || {};
-  const id = watch.videoId;
-  if (!/^[A-Za-z0-9_-]{11}$/.test(id || ""))
-    return null;
-  const album = credits(runs, "ALBUM")[0] || { id: "", name: "" };
-  album.imageUrl = image(item.thumbnail || item);
-  const times = runs.map((r) => r.text).concat((item.fixedColumns || []).map((c) => text(c.musicResponsiveListItemFixedColumnRenderer?.text)));
-  return {
-    id,
-    name: text(title),
-    artists: credits(runs, "ARTIST"),
-    album,
-    duration: times.map(duration).find((n) => n > 0) || 0,
-    url: `https://music.youtube.com/watch?v=${id}`,
-    unavailable: item.musicItemRendererDisplayPolicy === "MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT"
-  };
-}
-function toEntity(item, kind) {
-  const title = item.title || item.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text;
-  const endpoint = browseEndpoint(item) || title?.runs?.map(browseEndpoint).find(Boolean);
-  if (!endpoint?.browseId)
-    return null;
-  const id = endpoint.browseId;
-  const type = pageType(endpoint);
-  if (kind === "albums" && !type.includes("ALBUM") && !id.startsWith("MPRE"))
-    return null;
-  if (kind === "artists" && !type.includes("ARTIST") && !id.startsWith("UC"))
-    return null;
-  if (kind === "playlists" && !type.includes("PLAYLIST") && !id.startsWith("VL"))
-    return null;
-  const result = { id, name: text(title), imageUrl: image(item.thumbnailRenderer || item.thumbnail || item) };
-  const runs = item.subtitle?.runs || item.flexColumns?.slice(1).flatMap((c) => c.musicResponsiveListItemFlexColumnRenderer?.text?.runs || []) || [];
-  if (kind === "albums")
-    result.artists = credits(runs, "ARTIST");
-  if (kind === "playlists")
-    result.owner = credits(runs, "USER_CHANNEL")[0]?.name || "";
-  return result;
-}
-function items(root, kind = "tracks", unique = true) {
-  const renderers = [...nodes(root, "musicResponsiveListItemRenderer"), ...nodes(root, "musicTwoRowItemRenderer")];
-  const mapped = renderers.map((item) => kind === "tracks" ? toTrack(item) : toEntity(item, kind)).filter(Boolean);
-  if (!unique)
-    return mapped;
-  const seen = new Set;
-  return mapped.filter((item) => !seen.has(item.id) && seen.add(item.id));
-}
-function continuation(root) {
-  const next = nodes(root, "nextContinuationData")[0] || nodes(root, "reloadContinuationData")[0];
-  return next?.continuation || nodes(root, "continuationCommand")[0]?.token || "";
-}
-function header(root) {
-  const value = nodes(root, "musicResponsiveHeaderRenderer")[0] || nodes(root, "musicDetailHeaderRenderer")[0] || nodes(root, "musicImmersiveHeaderRenderer")[0] || nodes(root, "musicVisualHeaderRenderer")[0] || {};
-  return { name: text(value.title), imageUrl: image(value.thumbnail || value), description: text(value.description), artists: credits(value.subtitle?.runs || [], "ARTIST") };
-}
-function browseSections(root) {
-  const shelves = [...nodes(root, "musicCarouselShelfRenderer"), ...nodes(root, "musicShelfRenderer"), ...nodes(root, "musicPlaylistShelfRenderer")];
-  return shelves.map((shelf) => {
-    const section = { title: text(shelf.header?.musicCarouselShelfBasicHeaderRenderer?.title || shelf.title) };
-    for (const kind of ["tracks", "albums", "artists", "playlists"]) {
-      const list = items(shelf.contents || shelf, kind);
-      if (list.length)
-        section[kind] = list;
-    }
-    return section;
-  }).filter((s) => s.tracks?.length || s.albums?.length || s.artists?.length || s.playlists?.length);
-}
-
-// src/catalog.js
-var SEARCH_PARAMS = {
-  tracks: "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D",
-  albums: "EgWKAQIYAWoKEAkQChAFEAMQBA%3D%3D",
-  artists: "EgWKAQIgAWoKEAkQChAFEAMQBA%3D%3D",
-  playlists: "EgWKAQIoAWoKEAkQChAFEAMQBA%3D%3D"
-};
-function collectionParts(response) {
-  const shelves = nodes(response, "musicPlaylistShelfRenderer");
-  const continuations = nodes(response, "musicPlaylistShelfContinuation");
-  const musicShelves = nodes(response, "musicShelfRenderer");
-  const contents = shelves.length ? shelves : continuations.length ? continuations : musicShelves.length ? musicShelves : response;
-  return { tracks: items(contents, "tracks", false), token: continuation(contents) };
-}
-function createCatalog(client, session) {
-  const searches = new Map;
-  const likes = new Map;
-  let likedPages;
-  function clear() {
-    searches.clear();
-    likes.clear();
-    likedPages = undefined;
-  }
-  async function paged(state, offset, fetchPage, kind, deadline) {
-    if (!Number.isInteger(offset) || offset < 0)
-      throw failure("unavailable", "Invalid page offset.");
-    while (!state.started || state.values.length <= offset && state.token) {
-      if (Date.now() >= deadline)
-        throw failure("unavailable", "This page took too long to load. Try again.");
-      const previous = state.token;
-      const response = await fetchPage(state.token);
-      const list = items(response, kind);
-      const seen = new Set(state.values.map((item) => item.id));
-      state.values.push(...list.filter((item) => !seen.has(item.id) && seen.add(item.id)));
-      state.token = continuation(response);
-      state.started = true;
-      if (state.token === previous || !list.length && state.token)
-        state.token = "";
-      if (state.values.length > 5000)
-        throw failure("unavailable", "This collection is too large to load in one session.");
-    }
-    const values = state.values.slice(offset, offset + 25);
-    return { [kind]: values, more: offset + values.length < state.values.length || Boolean(state.token) };
-  }
-  const pageState = () => ({ started: false, values: [], token: "" });
-  async function search({ query, kind = "tracks", offset = 0 }) {
-    if (!SEARCH_PARAMS[kind])
-      throw failure("unsupported", "YouTube Music search supports songs, albums, artists and playlists.");
-    if (typeof query !== "string" || !query.trim())
-      return { [kind]: [], more: false };
-    const key = JSON.stringify([session.generation, query, kind]);
-    if (!searches.has(key) || offset === 0)
-      searches.set(key, pageState());
-    if (searches.size > 20)
-      searches.delete(searches.keys().next().value);
-    const deadline = Date.now() + 24000;
-    return paged(searches.get(key), offset, (token) => client.request("search", token ? { continuation: token } : { query, params: SEARCH_PARAMS[kind] }, { signed: Boolean(session.cookie), deadline }), kind, deadline);
-  }
-  async function browseData(id, deadline = Date.now() + 24000, signed = Boolean(session.cookie)) {
-    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(id))
-      throw failure("unavailable", "Invalid YouTube Music page.");
-    return client.request("browse", { browseId: id }, { signed, deadline });
-  }
-  async function collection(id) {
-    const deadline = Date.now() + 24000;
-    const response = await browseData(id, deadline, id === "VLLM" || Boolean(session.cookie));
-    const initial = collectionParts(response);
-    const tracks = initial.tracks;
-    let token = initial.token;
-    while (token) {
-      if (Date.now() > deadline - 1000)
-        throw failure("unavailable", "This playlist is too large to load now. Try a smaller collection.");
-      const next = await client.request("browse", { continuation: token }, { signed: Boolean(session.cookie), deadline });
-      const part = collectionParts(next);
-      tracks.push(...part.tracks);
-      const nextToken = part.token;
-      if (nextToken === token)
-        throw failure("unavailable", "YouTube Music repeated a playlist page.");
-      token = nextToken;
-      if (tracks.length > 5000)
-        throw failure("unavailable", "This playlist is too large to load.");
-    }
-    return { response, tracks, detail: header(response) };
-  }
-  async function home() {
-    const response = await browseData("FEmusic_home");
-    const sections = browseSections(response);
-    if (!sections.length)
-      throw failure("unavailable", "YouTube Music returned no home sections. Try search or sign in.");
-    return { title: "YouTube Music", sections };
-  }
-  async function playlist({ id }) {
-    const browseID = id.startsWith("VL") ? id : "VL" + id;
-    const { detail, tracks } = await collection(browseID);
-    return { id, name: detail.name || "Playlist", imageUrl: detail.imageUrl, description: detail.description, trackCount: tracks.length, tracks, fixed: browseID === "VLLM" };
-  }
-  async function album({ id }) {
-    const { detail, tracks } = await collection(id);
-    const album2 = { id, name: detail.name || tracks[0]?.album.name || "Album", imageUrl: detail.imageUrl || tracks[0]?.album.imageUrl, artists: detail.artists };
-    return { album: album2, tracks: tracks.map((track) => ({ ...track, album: album2, artists: track.artists.length ? track.artists : album2.artists })) };
-  }
-  async function artist({ id }) {
-    const response = await browseData(id);
-    const detail = header(response);
-    return { artist: { id, name: detail.name || "Artist", imageUrl: detail.imageUrl }, tracks: items(response), albums: items(response, "albums") };
-  }
-  async function libraryData() {
-    return browseData("FEmusic_liked_playlists", Date.now() + 24000, true);
-  }
-  async function playlists() {
-    return items(await libraryData(), "playlists").map((p) => ({ ...p, saved: true }));
-  }
-  async function browse({ page }) {
-    if (page !== "library")
-      throw failure("unsupported", "This YouTube Music page is not available.");
-    const sections = browseSections(await libraryData());
-    return { title: "Library", sections: sections.length ? sections : [{ title: "Playlists", empty: "Your saved playlists will appear here." }] };
-  }
-  async function liked({ offset = 0 }) {
-    if (!session.cookie)
-      throw failure("signIn", "Sign in to see your liked songs.");
-    if (!likedPages || offset === 0)
-      likedPages = pageState();
-    const deadline = Date.now() + 24000;
-    const result = await paged(likedPages, offset, (token) => client.request("browse", token ? { continuation: token } : { browseId: "VLLM" }, { signed: true, deadline }), "tracks", deadline);
-    for (const track of result.tracks)
-      likes.set(track.id, true);
-    return result;
-  }
-  async function isLiked({ ids }) {
-    if (!session.cookie)
-      return Object.fromEntries(ids.map((id) => [id, false]));
-    const unknown = ids.filter((id) => !likes.has(id));
-    if (unknown.length) {
-      const deadline = Date.now() + 24000;
-      for (let i = 0;i < unknown.length; i += 50) {
-        const response = await client.request("music/get_queue", { videoIds: unknown.slice(i, i + 50) }, { signed: true, deadline });
-        for (const renderer of nodes(response, "playlistPanelVideoRenderer")) {
-          const status = nodes(renderer, "likeButtonRenderer")[0]?.likeStatus;
-          const action = nodes(renderer, "toggleMenuServiceItemRenderer").map((item) => item.defaultServiceEndpoint?.likeEndpoint?.status).find(Boolean);
-          if (!renderer.videoId || !status && !action)
-            continue;
-          likes.set(renderer.videoId, status ? status === "LIKE" : action === "INDIFFERENT");
-        }
-      }
-      if (unknown.some((id) => !likes.has(id)))
-        throw failure("unavailable", "YouTube Music did not return the liked status of this song.");
-    }
-    return Object.fromEntries(ids.map((id) => [id, likes.get(id) === true]));
-  }
-  async function like({ id, on }) {
-    requireVideoID(id);
-    await client.request(on ? "like/like" : "like/removelike", { target: { videoId: id } }, { signed: true });
-    likes.set(id, Boolean(on));
-    likedPages = undefined;
-  }
-  return { clear, search, home, browse, playlist, album, artist, playlists, liked, isLiked, like };
-}
-
 // src/extractor.js
 var PROGRAMS = ["yt-dlp", "/opt/homebrew/bin/yt-dlp", "/usr/local/bin/yt-dlp"];
 var RUNTIMES = ["deno", "/opt/homebrew/bin/deno", "/usr/local/bin/deno"];
@@ -539,6 +134,8 @@ async function ready(stream, fetcher, deadline, retryDelays) {
     }
     if (!retry)
       break;
+    if (!retryDelays.length)
+      break;
     const delay = retryDelays[Math.min(attempt++, retryDelays.length - 1)];
     const remaining = deadline - Date.now();
     if (remaining <= delay)
@@ -552,9 +149,11 @@ function permissionError(error) {
 }
 function createExtractor(spawn, { timeout = 25000, fetch: fetcher = fetch, retryDelays = [1000, 2000, 4000] } = {}) {
   let runtime;
-  return async function extract(id) {
+  return async function extract(id, options = {}) {
     requireVideoID(id);
-    const deadline = Date.now() + timeout;
+    const deadline = Math.min(Date.now() + timeout, options.deadline ?? Infinity);
+    if (Date.now() >= deadline)
+      throw failure("unavailable", "YouTube audio extraction timed out. Try again.");
     if (!runtime) {
       for (const command of RUNTIMES) {
         let child2;
@@ -599,103 +198,769 @@ function createExtractor(spawn, { timeout = 25000, fetch: fetcher = fetch, retry
   };
 }
 
-// src/plugin.js
-var SIGN_IN_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
-var SIGN_IN_HANDOFF = "https://www.youtube.com/signin?action_handle_signin=true&app=desktop&next=" + encodeURIComponent("https://music.youtube.com/");
-var SIGN_IN_URL = "https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&uilel=3&passive=true&continue=" + encodeURIComponent(SIGN_IN_HANDOFF);
-function createPlugin(host2, fetcher = fetch) {
-  const stored = host2.storage.get("session");
-  const session = { cookie: typeof stored?.cookie === "string" ? stored.cookie : "", account: stored?.account || null, generation: 0 };
-  const client = createClient({ fetch: fetcher, session, language: () => host2.language() });
-  const catalog = createCatalog(client, session);
-  const extract = createExtractor((command, args) => host2.spawn(command, args), { fetch: fetcher });
-  const search = (params) => catalog.search(params);
-  const home = () => catalog.home();
-  const browse = (params) => catalog.browse(params);
-  const album = (params) => catalog.album(params);
-  const artist = (params) => catalog.artist(params);
-  const playlist = (params) => catalog.playlist(params);
-  const playlists = () => catalog.playlists();
-  const liked = (params) => catalog.liked(params);
-  const isLiked = (params) => catalog.isLiked(params);
-  const like = (params) => catalog.like(params);
-  const stream = ({ id }) => extract(id);
-  function readAccount(response) {
-    const active = nodes(response, "activeAccountHeaderRenderer")[0];
-    if (!active || !text(active.accountName))
-      throw failure("signIn", "YouTube Music did not confirm this account. Sign in again.");
-    return { id: text(active.channelHandle) || text(active.email) || "youtube-account", name: text(active.accountName), imageUrl: image(active.accountPhoto), page: "library" };
-  }
-  async function signIn() {
-    const generation = ++session.generation;
-    catalog.clear();
-    const result = await host2.webSignIn({
-      url: SIGN_IN_URL,
-      cookiesOf: "https://music.youtube.com",
-      until: ["SAPISID", "__Secure-3PSID"],
-      userAgent: SIGN_IN_USER_AGENT
-    });
-    if (generation !== session.generation)
-      throw failure("signIn", "This sign-in was cancelled.");
-    if (!result?.cookie || /[\r\n\0]/.test(result.cookie))
-      throw failure("signIn", "YouTube Music did not return a valid sign-in.");
-    const response = await client.request("account/account_menu", {}, { signed: true, cookie: result.cookie });
-    if (generation !== session.generation)
-      throw failure("signIn", "This sign-in was cancelled.");
-    const account2 = readAccount(response);
-    session.generation++;
-    catalog.clear();
-    session.cookie = result.cookie;
-    session.account = account2;
-    host2.storage.set("session", { cookie: session.cookie, account: account2 });
-    return account2;
-  }
-  function signOut() {
-    session.generation++;
-    session.cookie = "";
-    session.account = null;
-    catalog.clear();
-    host2.storage.remove("session");
-  }
-  async function account() {
-    if (!session.cookie)
-      return null;
-    const response = await client.request("account/account_menu", {}, { signed: true });
-    session.account = readAccount(response);
-    return session.account;
-  }
-  return { search, home, browse, album, artist, playlist, playlists, liked, isLiked, like, stream, signIn, signOut, account };
-}
-
 // src/index.js
-var plugin = createPlugin(host);
-var search = plugin.search;
-var home = plugin.home;
-var browse = plugin.browse;
-var album = plugin.album;
-var artist = plugin.artist;
-var playlist = plugin.playlist;
-var playlists = plugin.playlists;
-var liked = plugin.liked;
-var isLiked = plugin.isLiked;
-var like = plugin.like;
-var stream = plugin.stream;
-var signIn = plugin.signIn;
-var signOut = plugin.signOut;
-var account = plugin.account;
+var site = "https://music.youtube.com";
+var webUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+var t = host.t;
+function fail(code, message) {
+  const e = new Error(message);
+  e.code = code;
+  return e;
+}
+var previousSession = host.storage.get("session");
+if (!host.storage.get("cookie") && typeof previousSession?.cookie === "string") {
+  host.storage.set("cookie", previousSession.cookie);
+  host.storage.remove("session");
+}
+var cookie = () => host.storage.get("cookie") || "";
+var sessionGeneration = 0;
+function cookieValue(name) {
+  for (const part of cookie().split(";")) {
+    const at = part.indexOf("=");
+    if (part.slice(0, at).trim() === name)
+      return part.slice(at + 1).trim();
+  }
+  return "";
+}
+function needAccount() {
+  if (!cookie())
+    throw fail("signIn");
+}
+function sha1(text) {
+  const bytes = [...new TextEncoder().encode(text)];
+  const bits = bytes.length * 8;
+  bytes.push(128);
+  while (bytes.length % 64 !== 56)
+    bytes.push(0);
+  for (let i = 7;i >= 0; i--)
+    bytes.push(i >= 4 ? 0 : bits >>> i * 8 & 255);
+  const rotl = (x, n) => x << n | x >>> 32 - n;
+  const h = [1732584193, 4023233417, 2562383102, 271733878, 3285377520];
+  for (let at = 0;at < bytes.length; at += 64) {
+    const w = [];
+    for (let i = 0;i < 16; i++) {
+      w[i] = bytes[at + i * 4] << 24 | bytes[at + i * 4 + 1] << 16 | bytes[at + i * 4 + 2] << 8 | bytes[at + i * 4 + 3];
+    }
+    for (let i = 16;i < 80; i++)
+      w[i] = rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    let [a, b, c, d, e] = h;
+    for (let i = 0;i < 80; i++) {
+      const [f, k] = i < 20 ? [b & c | ~b & d, 1518500249] : i < 40 ? [b ^ c ^ d, 1859775393] : i < 60 ? [b & c | b & d | c & d, 2400959708] : [b ^ c ^ d, 3395469782];
+      const t2 = rotl(a, 5) + f + e + k + w[i] | 0;
+      [e, d, c, b, a] = [d, c, rotl(b, 30), a, t2];
+    }
+    [a, b, c, d, e].forEach((v, i) => h[i] = h[i] + v | 0);
+  }
+  return h.map((v) => (v >>> 0).toString(16).padStart(8, "0")).join("");
+}
+function authHeaders(origin = site) {
+  const sapisid = cookieValue("__Secure-3PAPISID") || cookieValue("SAPISID");
+  if (!sapisid)
+    return {};
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    cookie: cookie(),
+    authorization: `SAPISIDHASH ${now}_${sha1(`${now} ${sapisid} ${origin}`)}`,
+    "x-goog-authuser": "0"
+  };
+}
+function clientVersion() {
+  const d = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  return `1.${d}.01.00`;
+}
+var remix = {
+  get client() {
+    return { clientName: "WEB_REMIX", clientVersion: clientVersion(), hl: host.language() === "zh-CN" ? "zh-CN" : "en" };
+  }
+};
+var android = {
+  client: { clientName: "ANDROID_MUSIC", clientVersion: "7.21.50", androidSdkVersion: 34 },
+  headers: { "user-agent": "com.google.android.apps.youtube.music/7.21.50 (Linux; U; Android 14) gzip" }
+};
+var visionUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+var visionOS = (visitor) => ({
+  client: {
+    clientName: "VISIONOS",
+    clientVersion: "1.02",
+    deviceMake: "Apple",
+    deviceModel: "RealityDevice17,1",
+    userAgent: visionUA,
+    osName: "visionOS",
+    osVersion: "26.5.23O471",
+    visitorData: visitor
+  },
+  headers: {
+    "user-agent": visionUA,
+    "x-goog-visitor-id": visitor,
+    "x-youtube-client-name": "101",
+    "x-youtube-client-version": "1.02"
+  },
+  anonymous: true
+});
+async function call(endpoint, body, as = remix, signal) {
+  const generation = sessionGeneration;
+  const res = await fetch(`${site}/youtubei/v1/${endpoint}?prettyPrint=false`, {
+    method: "POST",
+    signal,
+    headers: {
+      "content-type": "application/json",
+      "user-agent": webUA,
+      origin: site,
+      "x-origin": site,
+      ...as.anonymous ? {} : authHeaders(),
+      ...as.headers
+    },
+    body: JSON.stringify({ context: { client: as.client }, ...body })
+  });
+  if (!as.anonymous && generation !== sessionGeneration)
+    throw fail("signIn", t("Your YouTube Music session has ended: sign in again"));
+  if (res.status === 401) {
+    if (as.anonymous)
+      throw new Error(`${endpoint}: ${res.status}`);
+    endSession();
+    throw fail("signIn", t("Your YouTube Music session has ended: sign in again"));
+  }
+  if (!res.ok)
+    throw new Error(`${endpoint}: ${res.status}`);
+  const answer = await res.json();
+  if (!as.anonymous && generation !== sessionGeneration)
+    throw fail("signIn", t("Your YouTube Music session has ended: sign in again"));
+  return answer;
+}
+var browseId = (id) => call("browse", { browseId: id });
+function findAll(node, name, out = []) {
+  if (Array.isArray(node)) {
+    for (const item of node)
+      findAll(item, name, out);
+  } else if (node && typeof node === "object") {
+    for (const key of Object.keys(node)) {
+      if (key === name)
+        out.push(node[key]);
+      else
+        findAll(node[key], name, out);
+    }
+  }
+  return out;
+}
+var findOne = (node, name) => findAll(node, name)[0];
+var textOf = (t2) => t2 ? t2.simpleText || (t2.runs || []).map((r) => r.text).join("") : "";
+function imageOf(node) {
+  const list = node && findOne(node, "thumbnails");
+  const url = list && list.length ? list[list.length - 1].url : "";
+  if (!url)
+    return;
+  return url.replace(/=w\d+-h\d+[^/]*$/, "=w544-h544-l90-rj");
+}
+function msOf(text) {
+  if (!text || !/^\d+(:\d+)+$/.test(text))
+    return 0;
+  return text.split(":").reduce((sum, n) => sum * 60 + Number(n), 0) * 1000;
+}
+var pageTypeOf = (nav) => nav?.browseEndpoint?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType || "";
+var plainPlaylistId = (id) => (id || "").replace(/^VL/, "");
+function creditsOf(runs) {
+  const out = { artists: [], album: null, duration: 0, names: [] };
+  for (const run2 of runs || []) {
+    const text = run2.text;
+    if (!text || /^\s*[•·,&]\s*$/.test(text))
+      continue;
+    const nav = run2.navigationEndpoint;
+    const type = pageTypeOf(nav);
+    if (type === "MUSIC_PAGE_TYPE_ARTIST" || type === "MUSIC_PAGE_TYPE_USER_CHANNEL") {
+      out.artists.push({ id: nav.browseEndpoint.browseId, name: text });
+    } else if (type === "MUSIC_PAGE_TYPE_ALBUM" || type === "MUSIC_PAGE_TYPE_AUDIOBOOK") {
+      out.album = { id: nav.browseEndpoint.browseId, name: text };
+    } else if (msOf(text)) {
+      out.duration = msOf(text);
+    } else {
+      out.names.push(text);
+    }
+  }
+  return out;
+}
+function trackFrom(id, name, credits, image, unavailable) {
+  const artists = credits.artists.length ? credits.artists : credits.names.slice(0, 1).map((n) => ({ id: "", name: n }));
+  return {
+    id,
+    name,
+    artists,
+    album: credits.album ? { ...credits.album, imageUrl: image } : { id: "", name: "", imageUrl: image },
+    duration: credits.duration,
+    url: `${site}/watch?v=${id}`,
+    unavailable: unavailable || undefined
+  };
+}
+function rowOf(r) {
+  const columns = (r.flexColumns || []).map((c) => c.musicResponsiveListItemFlexColumnRenderer?.text);
+  const name = textOf(columns[0]);
+  const nav = columns[0]?.runs?.[0]?.navigationEndpoint;
+  const videoId = r.playlistItemData?.videoId || nav?.watchEndpoint?.videoId;
+  const runs = columns.slice(1).flatMap((c) => [...c?.runs || [], { text: "•" }]);
+  const fixed = (r.fixedColumns || []).map((c) => textOf(c.musicResponsiveListItemFixedColumnRenderer?.text));
+  const credits = creditsOf(runs);
+  credits.duration = credits.duration || msOf(fixed[0]);
+  const image = imageOf(r.thumbnail);
+  if (videoId) {
+    const grey = r.musicItemRendererDisplayPolicy === "MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT";
+    return { kind: "track", value: trackFrom(videoId, name, credits, image, grey) };
+  }
+  const target = r.navigationEndpoint;
+  return collectionOf(target, name, runs, image);
+}
+function cardOf(r) {
+  const name = textOf(r.title);
+  const runs = r.subtitle?.runs || [];
+  const image = imageOf(r.thumbnailRenderer);
+  const nav = r.navigationEndpoint;
+  if (nav?.watchEndpoint?.videoId) {
+    const credits = creditsOf(runs);
+    credits.names = credits.names.slice(1);
+    return { kind: "track", value: trackFrom(nav.watchEndpoint.videoId, name, credits, image) };
+  }
+  return collectionOf(nav, name, runs, image);
+}
+function collectionOf(nav, name, runs, image) {
+  const id = nav?.browseEndpoint?.browseId;
+  if (!id)
+    return null;
+  const credits = creditsOf(runs);
+  switch (pageTypeOf(nav)) {
+    case "MUSIC_PAGE_TYPE_ARTIST":
+    case "MUSIC_PAGE_TYPE_USER_CHANNEL":
+      return { kind: "artist", value: { id, name, imageUrl: image } };
+    case "MUSIC_PAGE_TYPE_ALBUM":
+    case "MUSIC_PAGE_TYPE_AUDIOBOOK":
+      return { kind: "album", value: { id, name, imageUrl: image, artists: credits.artists, released: credits.names.find((n) => /^\d{4}$/.test(n)) } };
+    case "MUSIC_PAGE_TYPE_PLAYLIST":
+      return { kind: "playlist", value: { id: plainPlaylistId(id), name, imageUrl: image, owner: credits.artists[0]?.name || credits.names[1] || "" } };
+  }
+  return null;
+}
+function itemsOf(list) {
+  const out = [];
+  for (const item of list || []) {
+    const row = item.musicResponsiveListItemRenderer;
+    const card = item.musicTwoRowItemRenderer;
+    const got = row ? rowOf(row) : card ? cardOf(card) : null;
+    if (got)
+      out.push(got);
+  }
+  return out;
+}
+var ofKind = (items, kind) => items.filter((i) => i.kind === kind).map((i) => i.value);
+async function withDurations(tracks) {
+  const missing = tracks.filter((t2) => !t2.duration).map((t2) => t2.id);
+  if (!missing.length)
+    return tracks;
+  const known = {};
+  try {
+    const r = await call("music/get_queue", { videoIds: [...new Set(missing)].slice(0, 100) });
+    for (const v of findAll(r, "playlistPanelVideoRenderer"))
+      known[v.videoId] = msOf(textOf(v.lengthText));
+  } catch (e) {
+    console.warn(`get_queue: ${e.message}`);
+  }
+  for (const t2 of tracks)
+    t2.duration = t2.duration || known[t2.id] || 0;
+  return tracks;
+}
+function shelfTitle(shelf) {
+  return textOf(shelf.title) || textOf(findOne(shelf.header, "title"));
+}
+async function sectionsOf(answer) {
+  const sections = [];
+  for (const list of findAll(answer, "sectionListRenderer").concat(findAll(answer, "sectionListContinuation"))) {
+    for (const entry of list.contents || []) {
+      const shelf = entry.musicCarouselShelfRenderer || entry.musicShelfRenderer || entry.musicPlaylistShelfRenderer || entry.gridRenderer;
+      if (!shelf)
+        continue;
+      const items = itemsOf(shelf.contents || shelf.items);
+      if (!items.length)
+        continue;
+      sections.push({
+        title: shelfTitle(shelf),
+        tracks: await withDurations(ofKind(items, "track")),
+        albums: ofKind(items, "album"),
+        artists: ofKind(items, "artist"),
+        playlists: ofKind(items, "playlist")
+      });
+    }
+  }
+  return sections;
+}
+function nextToken(node) {
+  if (!node)
+    return "";
+  const old = findOne(node, "nextContinuationData");
+  if (old?.continuation)
+    return old.continuation;
+  return findOne(node, "continuationCommand")?.token || "";
+}
+var tokens = new Map;
+function pageToken(key, offset) {
+  return offset > 0 ? tokens.get(`${key}\x00${offset}`) : null;
+}
+function keepToken(key, offset, token) {
+  if (token)
+    tokens.set(`${key}\x00${offset}`, token);
+  return Boolean(token);
+}
+function rowsOf(answer) {
+  const further = findOne(answer, "onResponseReceivedActions") || findOne(answer, "musicShelfContinuation") || findOne(answer, "musicPlaylistShelfContinuation");
+  if (further) {
+    const list = findAll(further, "continuationItems")[0] || further.contents || [];
+    return { items: itemsOf(list), token: nextToken(further) };
+  }
+  const shelf = findOne(answer, "musicPlaylistShelfRenderer") || findOne(answer, "musicShelfRenderer");
+  return { items: itemsOf(shelf?.contents), token: nextToken(shelf) };
+}
+async function account() {
+  if (!cookie())
+    return null;
+  const r = await call("account/account_menu", {});
+  const header = findOne(r, "activeAccountHeaderRenderer");
+  if (!header)
+    return null;
+  const name = textOf(header.accountName);
+  return { id: textOf(header.channelHandle) || name, name, imageUrl: imageOf(header.accountPhoto) };
+}
+var signInPage = "https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&uilel=3&passive=true" + "&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26app%3Ddesktop%26next%3Dhttps%253A%252F%252Fmusic.youtube.com%252F";
+var browserUA = host.platform === "darwin" ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15" : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0";
+async function signIn() {
+  const generation = ++sessionGeneration;
+  const { cookie: session } = await host.webSignIn({
+    url: signInPage,
+    cookiesOf: site,
+    until: ["SAPISID", "__Secure-3PSID"],
+    userAgent: browserUA
+  });
+  if (generation !== sessionGeneration)
+    throw fail("signIn", t("Your YouTube Music session has ended: sign in again"));
+  host.storage.set("cookie", session);
+  host.storage.remove("session");
+  tokens.clear();
+  likedSet = null;
+  const me = await account();
+  if (generation !== sessionGeneration)
+    throw fail("signIn", t("Your YouTube Music session has ended: sign in again"));
+  if (!me) {
+    endSession();
+    throw new Error(t("YouTube Music didn't take that sign-in: try again"));
+  }
+  return me;
+}
+function signOut() {
+  endSession();
+}
+function endSession() {
+  sessionGeneration++;
+  host.storage.remove("cookie");
+  host.storage.remove("session");
+  tokens.clear();
+  likedSet = null;
+}
+async function home() {
+  const answer = await browseId("FEmusic_home");
+  const sections = await sectionsOf(answer);
+  let token = nextToken(findOne(answer, "sectionListRenderer"));
+  for (let i = 0;token && i < 2; i++) {
+    const more = await call("browse", { continuation: token });
+    sections.push(...await sectionsOf(more));
+    token = nextToken(findOne(more, "sectionListContinuation"));
+  }
+  return { title: t("Home"), sections };
+}
+async function browse({ page }) {
+  const ids = { charts: ["FEmusic_charts", "Charts"], new: ["FEmusic_new_releases", "New Releases"] };
+  const known = ids[page];
+  if (known)
+    return { title: t(known[1]), sections: await sectionsOf(await browseId(known[0])) };
+  throw fail("unavailable", t("no such page"));
+}
+var filters = {
+  tracks: "EgWKAQIIAWoMEA4QChADEAQQCRAF",
+  albums: "EgWKAQIYAWoMEA4QChADEAQQCRAF",
+  artists: "EgWKAQIgAWoMEA4QChADEAQQCRAF",
+  playlists: "EgeKAQQoAEABagwQDhAKEAMQBBAJEAU%3D"
+};
+async function search({ query, kind, offset }) {
+  const filter = filters[kind];
+  if (!filter)
+    return { [kind]: [], more: false };
+  const key = `search\x00${kind}\x00${query}`;
+  const token = pageToken(key, offset);
+  if (offset > 0 && !token)
+    return { [kind]: [], more: false };
+  const answer = await call("search", token ? { continuation: token } : { query, params: decodeURIComponent(filter) });
+  const { items, token: next } = rowsOf(answer);
+  const single = { tracks: "track", albums: "album", artists: "artist", playlists: "playlist" }[kind];
+  const found = ofKind(items, single);
+  if (kind === "tracks")
+    await withDurations(found);
+  return { [kind]: found, more: keepToken(key, offset + found.length, next) };
+}
+async function suggest({ query }) {
+  const r = await call("music/get_search_suggestions", { input: query });
+  return findAll(r, "searchSuggestionRenderer").map((s) => textOf(s.suggestion)).filter(Boolean);
+}
+function headerOf(answer) {
+  return findOne(answer, "musicResponsiveHeaderRenderer") || findOne(answer, "musicDetailHeaderRenderer") || {};
+}
+async function albumPage({ id }) {
+  const answer = await browseId(id);
+  const header = headerOf(answer);
+  const credits = creditsOf([...header.straplineTextOne?.runs || [], ...header.subtitle?.runs || []]);
+  const album = {
+    id,
+    name: textOf(header.title),
+    imageUrl: imageOf(header.thumbnail),
+    artists: credits.artists,
+    released: textOf(header.subtitle).match(/\b\d{4}\b/)?.[0]
+  };
+  const shelf = findOne(answer, "musicShelfRenderer");
+  const tracks = ofKind(itemsOf(shelf?.contents), "track").map((t2) => ({
+    ...t2,
+    artists: t2.artists.length ? t2.artists : album.artists,
+    album: { id, name: album.name, imageUrl: album.imageUrl }
+  }));
+  return { album, tracks: await withDurations(tracks) };
+}
+async function artistPage({ id }) {
+  const answer = await browseId(id);
+  const header = findOne(answer, "musicImmersiveHeaderRenderer") || findOne(answer, "musicVisualHeaderRenderer") || {};
+  const sections = await sectionsOf(answer);
+  return {
+    artist: { id, name: textOf(header.title), imageUrl: imageOf(header.thumbnail || header.foregroundThumbnail) },
+    tracks: sections.flatMap((s) => s.tracks).slice(0, 20),
+    albums: sections.flatMap((s) => s.albums)
+  };
+}
+var pagesAtMost = 30;
+async function tracksOfAll(answer) {
+  const out = [];
+  let { items, token } = rowsOf(answer);
+  out.push(...ofKind(items, "track"));
+  for (let i = 0;token && i < pagesAtMost; i++) {
+    ({ items, token } = rowsOf(await call("browse", { continuation: token })));
+    out.push(...ofKind(items, "track"));
+  }
+  return out;
+}
+async function playlistPage({ id }) {
+  const answer = await browseId(`VL${id}`);
+  const header = headerOf(answer);
+  const tracks = await withDurations(await tracksOfAll(answer));
+  return {
+    id,
+    name: textOf(header.title),
+    imageUrl: imageOf(header.thumbnail),
+    description: textOf(findOne(header.description, "description") || header.description),
+    owner: textOf(header.straplineTextOne),
+    trackCount: tracks.length,
+    tracks
+  };
+}
+async function playlists() {
+  if (!cookie())
+    return [];
+  const items = (await sectionsOf(await browseId("FEmusic_liked_playlists"))).flatMap((s) => s.playlists);
+  return items.filter((p) => p.id !== "LM" && p.id !== "SE").map((p) => ({ ...p, saved: true }));
+}
+async function liked({ offset }) {
+  needAccount();
+  const token = pageToken("liked", offset);
+  if (offset > 0 && !token)
+    return { tracks: [], more: false };
+  const answer = token ? await call("browse", { continuation: token }) : await browseId("VLLM");
+  const { items, token: next } = rowsOf(answer);
+  const tracks = await withDurations(ofKind(items, "track"));
+  return { tracks, more: keepToken("liked", offset + tracks.length, next) };
+}
+var likedSet = null;
+var likedAt = 0;
+var likedFor = 5 * 60 * 1000;
+async function likedIds() {
+  if (likedSet && Date.now() - likedAt < likedFor)
+    return likedSet;
+  const set = new Set;
+  let { items, token } = rowsOf(await browseId("VLLM"));
+  for (let i = 0;; i++) {
+    for (const t2 of ofKind(items, "track"))
+      set.add(t2.id);
+    if (!token || i >= 5)
+      break;
+    ({ items, token } = rowsOf(await call("browse", { continuation: token })));
+  }
+  likedSet = set;
+  likedAt = Date.now();
+  return set;
+}
+async function isLiked({ ids }) {
+  const set = cookie() ? await likedIds() : new Set;
+  return Object.fromEntries(ids.map((id) => [id, set.has(id)]));
+}
+async function like({ id, on }) {
+  needAccount();
+  await call(on ? "like/like" : "like/removelike", { target: { videoId: id } });
+  if (likedSet) {
+    if (on)
+      likedSet.add(id);
+    else
+      likedSet.delete(id);
+  }
+}
+async function recent() {
+  if (!cookie())
+    return [];
+  const sections = await sectionsOf(await browseId("FEmusic_history"));
+  return sections.flatMap((s) => s.tracks).slice(0, 50);
+}
+var radio = { id: "radio", name: "Radio", description: "Songs like the one you played last." };
+function stations() {
+  return [radio];
+}
+async function played({ id }) {
+  host.storage.set("lastPlayed", id);
+  if (!cookie())
+    return;
+  try {
+    await report(id);
+  } catch (e) {
+    console.warn(`reporting ${id} as played: ${e.message}`);
+  }
+}
+async function report(id) {
+  const r = await call("player", { videoId: id, playbackContext: { contentPlaybackContext: {} } });
+  const base = r.playbackTracking?.videostatsPlaybackUrl?.baseUrl;
+  if (!base)
+    throw new Error(t("YouTube gave no address to report it to"));
+  const url = new URL(base);
+  if (url.protocol !== "https:" || !/(^|\.)youtube\.com$/.test(url.hostname)) {
+    throw new Error(`not sending your session to ${url.hostname}`);
+  }
+  url.searchParams.set("ver", "2");
+  url.searchParams.set("c", "WEB_REMIX");
+  url.searchParams.set("cpn", playbackNonce());
+  const res = await fetch(url.href, {
+    headers: { "user-agent": webUA, referer: `${site}/`, ...authHeaders(url.origin) }
+  });
+  if (!res.ok)
+    throw new Error(`${res.status}`);
+}
+function playbackNonce() {
+  const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+  let out = "";
+  for (let i = 0;i < 16; i++)
+    out += alphabet[Math.floor(Math.random() * 64)];
+  return out;
+}
+function panelTrack(v) {
+  const credits = creditsOf(v.longBylineText?.runs);
+  credits.duration = msOf(textOf(v.lengthText));
+  return trackFrom(v.videoId, textOf(v.title), credits, imageOf(v.thumbnail));
+}
+async function stationNext() {
+  let seed = host.storage.get("lastPlayed");
+  if (!seed) {
+    const { sections } = await home();
+    seed = sections.flatMap((s) => s.tracks)[0]?.id;
+    if (!seed)
+      return [];
+  }
+  const answer = await call("next", { videoId: seed, playlistId: `RDAMVM${seed}`, isAudioOnly: true, enablePersistentPlaylistPanel: true, tunerSettingValue: "AUTOMIX_SETTING_NORMAL" });
+  return findAll(answer, "playlistPanelVideoRenderer").filter((v) => v.videoId !== seed).map(panelTrack);
+}
+async function lyrics({ id }) {
+  const next = await call("next", { videoId: id, isAudioOnly: true }, android);
+  const playing = findAll(next, "playlistPanelVideoRenderer").find((v) => v.videoId === id);
+  const [better, own] = await Promise.allSettled([
+    playing ? betterLyrics(panelTrack(playing)) : null,
+    youtubeLyrics(next)
+  ]);
+  if (better.status === "rejected")
+    console.warn(`Better Lyrics: ${better.reason?.message}`);
+  if (better.value?.lines.length)
+    return better.value;
+  if (own.status === "rejected")
+    throw own.reason;
+  return own.value;
+}
+async function betterLyrics(track) {
+  const query = new URLSearchParams({ s: track.name, a: track.artists.map((a) => a.name).join(", ") });
+  if (track.album.name)
+    query.set("al", track.album.name);
+  if (track.duration)
+    query.set("d", String(Math.round(track.duration / 1000)));
+  const res = await fetch(`https://api.betterlyrics.org/getLyrics?${query}`, {
+    headers: { "user-agent": "MyGo Music (https://github.com/egoist/mygo-music)" }
+  });
+  if (!res.ok)
+    return null;
+  const lines = linesOfTTML((await res.json()).ttml || "");
+  return lines.length ? { lines } : null;
+}
+var entities = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+var unescapeXML = (s) => s.replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (all, e) => e[0] !== "#" ? entities[e] ?? all : String.fromCodePoint(e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : Number(e.slice(1))));
+function clockOf(value) {
+  if (!value)
+    return null;
+  const parts = value.trim().replace(/s$/, "").split(":");
+  if (parts.length > 3 || parts.some((p) => p === "" || !(Number(p) >= 0)))
+    return null;
+  return Math.round(parts.reduce((sum, p) => sum * 60 + Number(p), 0) * 1000);
+}
+var attrOf = (attrs, name) => attrs.match(new RegExp(`\\s${name}="([^"]*)"`))?.[1];
+function linesOfTTML(ttml) {
+  const lines = [];
+  for (const [, pAttrs, body] of ttml.matchAll(/<p\b([^>]*)>([\s\S]*?)<\/p>/g)) {
+    const words = [];
+    let text = "";
+    let lead = "";
+    let word = null;
+    let depth = 0;
+    for (const [, close, name, attrs, chars] of body.matchAll(/<(\/?)([\w:.-]+)([^>]*?)\/?>|([^<]+)/g)) {
+      if (chars !== undefined) {
+        const s = unescapeXML(chars);
+        text += s;
+        if (word)
+          word.text += s;
+        else if (words.length)
+          words[words.length - 1].text += s;
+        else
+          lead += s;
+        continue;
+      }
+      if (name !== "span")
+        continue;
+      if (close) {
+        if (word && --depth === 0) {
+          words.push(word);
+          word = null;
+        }
+      } else if (word) {
+        depth++;
+      } else {
+        const start2 = clockOf(attrOf(attrs, "begin"));
+        if (start2 === null)
+          continue;
+        word = { start: start2, end: clockOf(attrOf(attrs, "end")) ?? start2, text: lead.trimStart() };
+        lead = "";
+        depth = 1;
+      }
+    }
+    const start = clockOf(attrOf(pAttrs, "begin")) ?? words[0]?.start;
+    const end = clockOf(attrOf(pAttrs, "end")) ?? words[words.length - 1]?.end ?? 0;
+    text = text.replace(/\s+/g, " ").trim();
+    if (text && start != null)
+      lines.push({ start, end, text, words: words.length ? words : undefined });
+  }
+  return lines;
+}
+async function youtubeLyrics(next) {
+  const lyricsId = findAll(next, "browseId").find((b) => /^MPLY/.test(b));
+  if (!lyricsId)
+    return { lines: [] };
+  const r = await call("browse", { browseId: lyricsId }, android);
+  const timed = findOne(r, "timedLyricsData") || [];
+  return {
+    lines: timed.filter((l) => l.lyricLine).map((l) => ({
+      start: Number(l.cueRange?.startTimeMilliseconds) || 0,
+      end: Number(l.cueRange?.endTimeMilliseconds) || 0,
+      text: l.lyricLine
+    }))
+  };
+}
+var located = new Map;
+var locatedFor = 60 * 60 * 1000;
+var visitor = "";
+var extract = createExtractor((command, args) => host.spawn(command, args));
+async function visitorData(signal) {
+  if (visitor)
+    return visitor;
+  const r = await call("visitor_id", {}, { ...remix, anonymous: true }, signal);
+  visitor = r.responseContext?.visitorData || "";
+  if (!visitor)
+    throw new Error(t("YouTube gave this visit no ID"));
+  return visitor;
+}
+async function direct(id, signal) {
+  const r = await call("player", { videoId: id, contentCheckOk: true, racyCheckOk: true }, visionOS(await visitorData(signal)), signal);
+  const status = r.playabilityStatus || {};
+  if (status.status !== "OK") {
+    const why = status.reason || `YouTube says ${status.status || "nothing"} of this`;
+    throw status.status === "UNPLAYABLE" || status.status === "ERROR" ? Object.assign(fail("unavailable", why), { terminalPlayability: true }) : new Error(why);
+  }
+  const formats = (r.streamingData?.adaptiveFormats || []).filter((f) => /^audio\/(mp4|webm)(?:;|$)/.test(f.mimeType || "") && f.url && !f.isDrc && (!f.audioTrack || f.audioTrack.audioIsDefault));
+  const aac = formats.filter((f) => f.mimeType.startsWith("audio/mp4"));
+  const best = (aac.length ? aac : formats).sort((a, b) => b.bitrate - a.bitrate)[0];
+  if (!best)
+    throw new Error(t("YouTube listed no audio to play as it is"));
+  const type = best.mimeType.startsWith("audio/mp4") ? "m4a" : "webm";
+  return {
+    ...streamFromInfo({ url: best.url, protocol: "https", ext: type, acodec: type === "m4a" ? "aac" : "opus", vcodec: "none", http_headers: { "User-Agent": webUA } }),
+    bitRate: best.bitrate,
+    gain: gainOf(r.playerConfig?.audioConfig)
+  };
+}
+function gainOf(audio) {
+  const lkfs = audio?.trackAbsoluteLoudnessLkfs ?? audio?.perceptualLoudnessDb;
+  if (typeof lkfs !== "number" || !lkfs)
+    return;
+  return Math.round((-18 - lkfs) * 100) / 100;
+}
+async function stream({ id }) {
+  requireVideoID(id);
+  const deadline = Date.now() + 25000;
+  let known = located.get(id);
+  if (known && Date.now() - known.at >= locatedFor) {
+    located.delete(id);
+    known = null;
+  }
+  if (known) {
+    try {
+      return await ready(known, fetch, Math.min(deadline, Date.now() + 1200), []);
+    } catch {
+      located.delete(id);
+    }
+  }
+  const controller = new AbortController;
+  const timer = setTimeout(() => controller.abort(), Math.min(6000, deadline - Date.now()));
+  let source;
+  try {
+    source = await direct(id, controller.signal);
+    await ready(source, fetch, Math.min(deadline, Date.now() + 1200), []);
+  } catch (error) {
+    if (error.terminalPlayability)
+      throw error;
+    visitor = "";
+    source = { ...await extract(id, { deadline }), gain: source?.gain };
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+  source.at = Date.now();
+  located.set(id, source);
+  return source;
+}
 export {
+  suggest,
   stream,
+  stations,
+  stationNext,
   signOut,
   signIn,
   search,
+  recent,
   playlists,
-  playlist,
+  playlistPage as playlist,
+  played,
+  lyrics,
   liked,
   like,
   isLiked,
   home,
   browse,
-  artist,
-  album,
+  artistPage as artist,
+  albumPage as album,
   account
 };
