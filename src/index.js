@@ -389,7 +389,7 @@ const browserUA =
     : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0";
 
 export async function signIn() {
-  const generation = ++sessionGeneration;
+  let generation = ++sessionGeneration;
   const { cookie: session } = await host.webSignIn({
     url: signInPage,
     cookiesOf: site,
@@ -397,6 +397,7 @@ export async function signIn() {
     userAgent: browserUA,
   });
   if (generation !== sessionGeneration) throw fail("signIn", t("Your YouTube Music session has ended: sign in again"));
+  generation = ++sessionGeneration;
   host.storage.set("cookie", session);
   host.storage.remove("session");
   tokens.clear();

@@ -1,7 +1,6 @@
 import { test, expect } from 'bun:test';
 import { fakeProcess } from './helpers.js';
 
-let imports = 0;
 const audioURL = 'https://rr1---sn-test.googlevideo.com/videoplayback';
 function container() { return new Response(new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]), { status: 206 }); }
 async function withPlugin(run, initial = {}) {
@@ -26,7 +25,7 @@ async function withPlugin(run, initial = {}) {
     return fetcher(url, options);
   };
   try {
-    const plugin = await import(`../src/index.js?test=${imports++}`);
+    const plugin = await import(`../src/index.js?test=${crypto.randomUUID()}`);
     await run({ plugin, storage, calls, processes, fetch: fn => { fetcher = fn; }, finishSignIn: cookie => signingIn({ cookie }) });
   } finally { globalThis.host = originalHost; globalThis.fetch = originalFetch; }
 }
@@ -187,4 +186,22 @@ test('does not retry a service-declared unplayable item', async () => {
     await expect(plugin.stream({ id: 'aaaaaaaaaa1' })).rejects.toMatchObject({ code: 'unavailable', message: 'Removed item' });
     expect(processes.length).toBe(0);
   });
+});
+
+// Requests using the old account while Google's dialog is open must not survive committing the new cookie.
+test('invalidates account requests started during the sign-in dialog', async () => {
+  await withPlugin(async ({ plugin, storage, fetch, finishSignIn }) => {
+    let completeOld;
+    fetch(async (url, options) => {
+      if (options.headers.cookie === 'SAPISID=old') return new Promise(resolve => { completeOld = resolve; });
+      return Response.json({ activeAccountHeaderRenderer: { accountName: { simpleText: 'New account' }, channelHandle: { simpleText: '@new' } } });
+    });
+    const signingIn = plugin.signIn();
+    const old = plugin.account();
+    finishSignIn('SAPISID=new');
+    expect(await signingIn).toMatchObject({ id: '@new' });
+    completeOld(new Response('', { status: 401 }));
+    await expect(old).rejects.toMatchObject({ code: 'signIn' });
+    expect(storage.get('cookie')).toBe('SAPISID=new');
+  }, { cookie: 'SAPISID=old' });
 });

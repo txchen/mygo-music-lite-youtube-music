@@ -527,7 +527,7 @@ async function account() {
 var signInPage = "https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&uilel=3&passive=true" + "&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26app%3Ddesktop%26next%3Dhttps%253A%252F%252Fmusic.youtube.com%252F";
 var browserUA = host.platform === "darwin" ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15" : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0";
 async function signIn() {
-  const generation = ++sessionGeneration;
+  let generation = ++sessionGeneration;
   const { cookie: session } = await host.webSignIn({
     url: signInPage,
     cookiesOf: site,
@@ -536,6 +536,7 @@ async function signIn() {
   });
   if (generation !== sessionGeneration)
     throw fail("signIn", t("Your YouTube Music session has ended: sign in again"));
+  generation = ++sessionGeneration;
   host.storage.set("cookie", session);
   host.storage.remove("session");
   tokens.clear();
