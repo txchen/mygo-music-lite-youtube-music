@@ -1,0 +1,12 @@
+{
+  "name": "mygo-music-lite-youtube-music",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/index.js --target browser --format esm --outfile index.js",
+    "test": "bun test",
+    "smoke": "bun scripts/smoke.js",
+    "smoke:audio": "bun scripts/smoke-audio.js"
+  }
+}
