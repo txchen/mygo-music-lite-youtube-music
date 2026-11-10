@@ -205,3 +205,22 @@ test('invalidates account requests started during the sign-in dialog', async () 
     expect(storage.get('cookie')).toBe('SAPISID=new');
   }, { cookie: 'SAPISID=old' });
 });
+
+// A 302 from a playable CDN must stay on the direct path, including subsequent cached plays.
+test('plays and caches the verified redirect destination without spawning helpers', async () => {
+  await withPlugin(async ({ plugin, fetch, processes, calls }) => {
+    const finalURL = 'https://other.googlevideo.com/audio';
+    fetch(async url => {
+      if (url === audioURL) return new Response(null, { status: 302, headers: { location: finalURL } });
+      if (url === finalURL) return container();
+      if (url.includes('/visitor_id?')) return Response.json({ responseContext: { visitorData: 'visitor' } });
+      return Response.json({ playabilityStatus: { status: 'OK' }, streamingData: {
+        adaptiveFormats: [{ url: audioURL, mimeType: 'audio/mp4', bitrate: 128000 }],
+      } });
+    });
+    expect((await plugin.stream({ id: 'aaaaaaaaaa1' })).url).toBe(finalURL);
+    expect((await plugin.stream({ id: 'aaaaaaaaaa1' })).url).toBe(finalURL);
+    expect(calls.filter(call => call.url === audioURL).length).toBe(1);
+    expect(processes.length).toBe(0);
+  }, { cookie: 'SAPISID=private' });
+});

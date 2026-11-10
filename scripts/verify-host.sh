@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ -z "${MYGO_LITE_REPO:-}" ]]; then
-  echo 'Set MYGO_LITE_REPO to a local MyGo Music Lite 0.3.0 Git checkout.' >&2
+  echo 'Set MYGO_LITE_REPO to a local MyGo Music Lite 0.4.0 or later Git checkout.' >&2
   exit 2
 fi
 plugin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,10 +12,20 @@ trap 'rm -rf "$verification_dir"' EXIT
 git -C "$MYGO_LITE_REPO" archive --format=tar HEAD | tar -xf - -C "$verification_dir"
 cp "$plugin_dir/test/host/catalog_live_test.go" "$verification_dir/internal/plugin/youtube_live_test.go"
 cp "$plugin_dir/test/host/playback_live_test.go" "$verification_dir/internal/player/youtube_live_test.go"
+cp "$plugin_dir/test/host/redirect_test.go" "$verification_dir/internal/plugin/youtube_redirect_test.go"
 export MYGO_YOUTUBE_PLUGIN="$plugin_dir"
 cd "$verification_dir"
+# The portable backend's static libraries are outside Git. Copy the local cache,
+# then let the archived build recipe verify its hashes or rebuild it.
+if [[ -f scripts/build-audio.sh ]]; then
+  if [[ -d "$MYGO_LITE_REPO/build/audio/darwin-arm64" ]]; then
+    mkdir -p build/audio
+    cp -R "$MYGO_LITE_REPO/build/audio/darwin-arm64" build/audio/
+  fi
+  scripts/build-audio.sh
+fi
 
-go test ./internal/plugin -run '^TestYouTubeCatalogLive$' -count=1 -v
+go test ./internal/plugin -run '^TestYouTube(CatalogLive|Redirect)$' -count=1 -v
 if [[ -n "${MYGO_SIGN_IDENTITY:-}" ]]; then
   test_binary="$verification_dir/youtube-player.test"
   entitlements="$verification_dir/youtube-entitlements.plist"

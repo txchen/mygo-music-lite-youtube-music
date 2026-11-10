@@ -838,7 +838,7 @@ export async function stream({ id }) {
   let source;
   try {
     source = await direct(id, controller.signal);
-    await ready(source, fetch, Math.min(deadline, Date.now() + 1200), []);
+    source = await ready(source, fetch, Math.min(deadline, Date.now() + 1200), []);
   } catch (error) {
     if (error.terminalPlayability) throw error;
     visitor = "";

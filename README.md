@@ -1,6 +1,6 @@
 # YouTube Music for MyGo Music Lite
 
-A direct port of [the original YouTube Music plugin](https://github.com/egoist/mygo-music-youtube-music) for **MyGo Music Lite 0.3.0 on macOS Apple Silicon**. Version 0.2.0 restores the original plugin's catalog, account, history, radio, lyrics and Chinese translation. [UPSTREAM.md](UPSTREAM.md) records the exact source revision and Lite adaptations.
+A direct port of [the original YouTube Music plugin](https://github.com/egoist/mygo-music-youtube-music) for **MyGo Music Lite 0.3.0 or later on macOS Apple Silicon**. Version 0.2.1 fixes audio CDN redirects that unnecessarily triggered slow yt-dlp fallback. The port retains the original plugin's catalog, account, history, radio, lyrics and Chinese translation. [UPSTREAM.md](UPSTREAM.md) records the exact source revision and Lite adaptations.
 
 ## Install
 
@@ -14,7 +14,7 @@ brew install yt-dlp deno
 
 The fallback searches `PATH`, `/opt/homebrew/bin` and `/usr/local/bin`. Reopen Lite after installing or upgrading the programs and allow the plugin to run them when prompted. No Node.js, Bun or ffmpeg is needed for playback. Bun is used only for development. Lite's optional `mpv` fallback can support audio formats its native engine cannot open.
 
-`minAppVersion` remains `0.1.22`, Lite's retained plugin API baseline. This release targets Lite 0.3.0.
+`minAppVersion` remains `0.1.22`, Lite's retained plugin API baseline. This release works with Lite 0.3.0 or later; Lite 0.4.3 includes playback diagnostic logs.
 
 ## Features
 
@@ -34,7 +34,7 @@ The original plugin does not implement uploads, downloads, podcast search or pla
 
 The original anonymous visitor/VISIONOS lookup finds a direct file without starting a subprocess. The Lite adapter prefers AAC/M4A, retains gain and bitrate, and returns the native URL, type and safe headers. It can also return WebM. It never transcodes or starts an ffmpeg HTTP server.
 
-Addresses are cached for up to an hour. A small range request validates the container before each return. A stale cached address is replaced. A newly refused direct address uses yt-dlp instead. There is no unconditional readiness sleep. Temporary fallback CDN refusals retry within a shared 25-second resolution deadline. The same budget covers direct lookup, runtime discovery, extraction and readiness checks. Timed-out or noisy helpers are killed and reaped.
+Addresses are cached for up to an hour. A small range request validates the container before each return. Up to five HTTPS redirects within the Google Video CDN are checked individually, with the same probe deadline and container validation. The verified destination is returned to Lite and cached. A stale cached address is replaced. A newly refused direct address uses yt-dlp instead. There is no unconditional readiness sleep. Temporary fallback CDN refusals retry within a shared 25-second resolution deadline. The same budget covers direct lookup, runtime discovery, extraction and readiness checks. Timed-out or noisy helpers are killed and reaped.
 
 The yt-dlp fallback uses public access even while catalog sign-in is active. It accepts direct M4A/WebM audio files and rejects manifests, video, unexpected CDN hosts and unsafe headers. This differs from the original plugin's cookie-bearing HLS fallback, which required transcoding. Account-only, Premium-only, age-restricted and region-restricted audio can remain unavailable. Codec support depends on Lite's playback engine.
 
@@ -67,7 +67,7 @@ bun run smoke:audio
 MYGO_LITE_REPO=/path/to/mygo-music-lite bash scripts/verify-host.sh
 ```
 
-The host verifier archives the committed host checkout into a temporary directory. It tests Home, Charts, New Releases, suggestions, radio, all four search kinds, pagination and detail pages through Lite's actual JavaScript runtime. Radio uses `played` with temporary unsigned storage, so it does not report to an account. The player check resolves a public video, measures stream resolution and native startup, then tests muted playback, pause, seek and resume. Set `MYGO_YOUTUBE_VIDEO` to choose another public video.
+The host verifier requires a Lite 0.4.0 or later checkout and archives the committed host checkout into a temporary directory. It tests Home, Charts, New Releases, suggestions, radio, all four search kinds, pagination and detail pages through Lite's actual JavaScript runtime. Radio uses `played` with temporary unsigned storage, so it does not report to an account. The player check resolves a public video, measures stream resolution and native startup, then tests muted playback, pause, seek and resume. Set `MYGO_YOUTUBE_VIDEO` to choose another public video.
 
 The verifier leaves the source checkout and app data untouched. It requires macOS, Go and Lite's native build dependencies. Set `MYGO_SIGN_IDENTITY` to test a hardened runtime signed with Lite's library-validation entitlement. Set `MYGO_SIGN_KEYCHAIN` when needed. The script signs only its temporary test binary.
 

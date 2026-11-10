@@ -83,6 +83,34 @@ async function run(process, deadline, limit) {
     }
   }
 }
+async function probe(stream, fetcher, signal) {
+  let url = new URL(stream.url);
+  const visited = new Set;
+  for (let hop = 0;hop <= 5; hop++) {
+    if (visited.has(url.href))
+      throw failure("unavailable", "The audio server returned a redirect loop.");
+    visited.add(url.href);
+    const response = await fetcher(url.href, { headers: { ...stream.headers, Range: "bytes=0-511" }, signal, redirect: "manual" });
+    if (![301, 302, 303, 307, 308].includes(response.status))
+      return { response, url: url.href };
+    const location = response.headers.get("location");
+    try {
+      await response.body?.cancel();
+    } catch {}
+    if (!location || hop === 5)
+      throw failure("unavailable", "The audio server returned an invalid redirect.");
+    let next;
+    try {
+      next = new URL(location, url);
+    } catch {
+      throw failure("unavailable", "The audio server returned an invalid redirect.");
+    }
+    if (next.protocol !== "https:" || !next.hostname.endsWith(".googlevideo.com") || next.username || next.password || next.port || next.hash || /\.(m3u8|mpd)(?:$|[?])/i.test(next.pathname)) {
+      throw failure("unavailable", "The audio server redirected outside the supported audio CDN.");
+    }
+    url = next;
+  }
+}
 async function ready(stream, fetcher, deadline, retryDelays) {
   let attempt = 0;
   while (Date.now() < deadline) {
@@ -91,7 +119,8 @@ async function ready(stream, fetcher, deadline, retryDelays) {
     let response;
     let retry = false;
     try {
-      response = await fetcher(stream.url, { headers: { ...stream.headers, Range: "bytes=0-511" }, signal: controller.signal, redirect: "error" });
+      const checked = await probe(stream, fetcher, controller.signal);
+      response = checked.response;
       if (response.status === 206) {
         const reader = response.body?.getReader();
         if (!reader)
@@ -115,7 +144,7 @@ async function ready(stream, fetcher, deadline, retryDelays) {
         const m4a = bytes.length >= 8 && String.fromCharCode(...bytes.slice(4, 8)) === "ftyp";
         const webm = bytes[0] === 26 && bytes[1] === 69 && bytes[2] === 223 && bytes[3] === 163;
         if (stream.type === "m4a" ? m4a : webm)
-          return stream;
+          return { ...stream, url: checked.url };
         throw failure("unavailable", "The audio server returned an unexpected audio container.");
       }
       retry = [403, 502, 503, 504].includes(response.status);
@@ -929,7 +958,7 @@ async function stream({ id }) {
   let source;
   try {
     source = await direct(id, controller.signal);
-    await ready(source, fetch, Math.min(deadline, Date.now() + 1200), []);
+    source = await ready(source, fetch, Math.min(deadline, Date.now() + 1200), []);
   } catch (error) {
     if (error.terminalPlayability)
       throw error;

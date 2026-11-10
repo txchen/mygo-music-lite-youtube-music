@@ -116,7 +116,7 @@ func TestYouTubeDirectLive(t *testing.T) {
 		}
 	}()
 	var out engine
-	mygo.RunOnMain(func() { out, err = openAVPlayer(&music.Stream{URL: relay.url, Type: "m4a"}) })
+	mygo.RunOnMain(func() { out, err = openPortable(&music.Stream{URL: relay.url, Type: "m4a"}) })
 	if err != nil {
 		t.Fatal(err)
 	}

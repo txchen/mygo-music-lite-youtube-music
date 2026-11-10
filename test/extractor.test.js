@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { createExtractor as makeExtractor, streamFromInfo, FORMAT } from '../src/extractor.js';
+import { createExtractor as makeExtractor, streamFromInfo, ready, FORMAT } from '../src/extractor.js';
 import { direct, fakeProcess } from './helpers.js';
 const readyResponse = () => new Response(new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112, 77, 52, 65, 32]), { status: 206 });
 const createExtractor = (spawn, options = {}) => makeExtractor(spawn, { fetch: async () => readyResponse(), ...options });
@@ -81,7 +81,7 @@ test('waits for a temporarily refused direct file to become ready', async () => 
       attempts++;
       expect(options.headers.Range).toBe('bytes=0-511');
       expect(options.headers.Cookie).toBeUndefined();
-      expect(options.redirect).toBe('error');
+      expect(options.redirect).toBe('manual');
       if (attempts === 1) return new Response(new ReadableStream({ cancel() { cancelled++; } }), { status: 403 });
       return new Response(new ReadableStream({
         start(controller) { controller.enqueue(new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112])); },
@@ -128,4 +128,54 @@ test('aborts a hanging readiness response', async () => {
   });
   await expect(extractor('aaaaaaaaaa1')).rejects.toMatchObject({ code: 'unavailable' });
   expect(aborted).toBe(1);
+});
+
+// A valid CDN redirect used to trigger yt-dlp instead of returning usable direct audio.
+test('follows CDN and relative redirects and returns the verified final URL', async () => {
+  const stream = streamFromInfo(direct());
+  const calls = [];
+  let cancelled = 0;
+  const result = await ready(stream, async (url, options) => {
+    calls.push(url);
+    expect(options.redirect).toBe('manual');
+    expect(options.headers.Range).toBe('bytes=0-511');
+    if (calls.length < 3) return new Response(new ReadableStream({ cancel() { cancelled++; } }), {
+      status: calls.length === 1 ? 302 : 307,
+      headers: { location: calls.length === 1 ? 'https://b.googlevideo.com/first' : '/final?signature=test' },
+    });
+    return readyResponse();
+  }, Date.now() + 1000, []);
+  expect(result.url).toBe('https://b.googlevideo.com/final?signature=test');
+  expect(calls.length).toBe(3);
+  expect(cancelled).toBe(2);
+});
+
+// Redirects must be rejected before any request reaches an untrusted target.
+test('rejects unsafe targets, absent locations and redirect loops without fetching them', async () => {
+  const stream = streamFromInfo(direct());
+  for (const location of ['https://evil.test/a', 'https://a.googlevideo.com.evil.test/a', 'http://a.googlevideo.com/a',
+    'https://user:secret@a.googlevideo.com/a', 'https://a.googlevideo.com:444/a', 'file:///tmp/a',
+    'https://a.googlevideo.com/a.m3u8', stream.url, null]) {
+    let calls = 0;
+    await expect(ready(stream, async () => {
+      calls++;
+      return new Response(null, { status: 302, headers: location ? { location } : {} });
+    }, Date.now() + 1000, [])).rejects.toMatchObject({ code: 'unavailable' });
+    expect(calls).toBe(1);
+  }
+});
+
+// A redirect chain cannot evade the request bound or container validation.
+test('bounds redirect chains and rejects a final non-audio body', async () => {
+  const stream = streamFromInfo(direct());
+  let calls = 0;
+  await expect(ready(stream, async () => new Response(null, { status: 302,
+    headers: { location: `https://a.googlevideo.com/hop${++calls}` },
+  }), Date.now() + 1000, [])).rejects.toMatchObject({ code: 'unavailable' });
+  expect(calls).toBe(6);
+  calls = 0;
+  await expect(ready(stream, async () => ++calls === 1
+    ? new Response(null, { status: 302, headers: { location: '/other' } })
+    : new Response('not an audio file', { status: 206 }), Date.now() + 1000, [])).rejects.toMatchObject({ code: 'unavailable' });
+  expect(calls).toBe(2);
 });
