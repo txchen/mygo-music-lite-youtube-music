@@ -92,8 +92,10 @@ const remix = {
 };
 
 // Its Android app, which is told when each line of the lyrics is sung, where
-// the website only gets the words.
+// the website only gets the words. It asks as a visitor: the website's session
+// is turned down with a 400, and lyrics are the same for everyone.
 const android = {
+  anonymous: true,
   client: { clientName: "ANDROID_MUSIC", clientVersion: "7.21.50", androidSdkVersion: 34 },
   headers: { "user-agent": "com.google.android.apps.youtube.music/7.21.50 (Linux; U; Android 14) gzip" },
 };

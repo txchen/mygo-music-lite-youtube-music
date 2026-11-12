@@ -1,6 +1,6 @@
 # YouTube Music for MyGo Music Lite
 
-A direct port of [the original YouTube Music plugin](https://github.com/egoist/mygo-music-youtube-music) for **MyGo Music Lite 0.3.0 or later on macOS Apple Silicon**. Version 0.2.1 fixes audio CDN redirects that unnecessarily triggered slow yt-dlp fallback. The port retains the original plugin's catalog, account, history, radio, lyrics and Chinese translation. [UPSTREAM.md](UPSTREAM.md) records the exact source revision and Lite adaptations.
+A direct port of [the original YouTube Music plugin](https://github.com/egoist/mygo-music-youtube-music) for **MyGo Music Lite 0.3.0 or later on macOS Apple Silicon**. Version 0.2.2 fixes lyrics that stayed empty while signed in. The port retains the original plugin's catalog, account, history, radio, lyrics and Chinese translation. [UPSTREAM.md](UPSTREAM.md) records the exact source revision and Lite adaptations.
 
 ## Install
 
@@ -25,7 +25,7 @@ The port retains all twenty original plugin entry points.
 - Album, artist and playlist details with the original response mapping.
 - Google browser sign-in, account details, saved playlists, liked songs, like and unlike.
 - Recent history, reporting signed-in playback to YouTube, and Radio based on the last played song.
-- Timed lyrics from Better Lyrics with YouTube as fallback. The API retains word timing when available; Lite renders line-synced lyrics.
+- Timed lyrics from Better Lyrics with YouTube as fallback. The API retains word timing when available; Lite renders line-synced lyrics. Lyric requests use no account, since YouTube refuses its Android lyrics client with the website session.
 - The original Chinese translation and account, stations and liked navigation.
 
 The original plugin does not implement uploads, downloads, podcast search or playlist editing.

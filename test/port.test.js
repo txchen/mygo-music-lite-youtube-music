@@ -144,6 +144,20 @@ test('returns original YouTube timed lyrics when Better Lyrics has no match', as
   });
 });
 
+// Signed in, lyrics came back empty: the Android client was sent the website's
+// cookie and SAPISIDHASH, which YouTube answers with a 400.
+test('asks for lyrics without the signed-in session', async () => {
+  await withPlugin(async ({ plugin, storage, fetch }) => {
+    fetch(async (url, options) => {
+      if (options.headers.cookie || options.headers.authorization) return new Response('', { status: 400 });
+      if (url.includes('/next?')) return Response.json({ browseId: 'MPLY-test' });
+      return Response.json({ timedLyricsData: [{ lyricLine: 'A timed line', cueRange: { startTimeMilliseconds: '1200', endTimeMilliseconds: '2400' } }] });
+    });
+    expect(await plugin.lyrics({ id: 'aaaaaaaaaa1' })).toEqual({ lines: [{ start: 1200, end: 2400, text: 'A timed line' }] });
+    expect(storage.get('cookie')).toBe('SAPISID=private');
+  }, { cookie: 'SAPISID=private' });
+});
+
 // An old account response, including HTTP 401, must not erase a newer successful sign-in.
 test('rejects an old account response without clearing a newer session', async () => {
   await withPlugin(async ({ plugin, storage, fetch, finishSignIn }) => {
